@@ -13,11 +13,16 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
 .left{width:350px;background:linear-gradient(180deg,#f9f2e7,#efe0c8);padding:12px;border-radius:8px}
 .right{flex:1;padding:10px}
 .btn{padding:8px 12px;border-radius:8px;background:#2b2b2b;color:#fff;border:0;cursor:pointer}
+.btn[disabled]{opacity:0.5;cursor:not-allowed}
 .panel{background:rgba(255,255,255,0.6);padding:10px;border-radius:8px}
 .list{max-height:300px;overflow:auto}
 .log{height:180px;overflow:auto;background:rgba(0,0,0,0.03);padding:8px;border-radius:6px;font-size:13px}
 .small{font-size:12px;color:#6b4a19}
 .input{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc}
+/* modal */
+.modal{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal .box{background:white;padding:18px;border-radius:8px;width:320px;box-shadow:0 6px 30px rgba(0,0,0,0.3)}
+.modal h3{margin:0 0 8px 0}
 </style>
 </head>
 <body>
@@ -64,6 +69,17 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
   </div>
 </div>
 
+<!-- name modal shown when user has no character yet -->
+<div id="nameModal" class="modal" style="display:none">
+  <div class="box">
+    <h3>创建你的角色</h3>
+    <div style="margin-top:8px">名字：<input id="modalName" class="input" maxlength="10" /></div>
+    <div style="margin-top:8px">性别：<select id="modalGender" class="input"><option>男</option><option>女</option></select></div>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button class="btn" id="modalCreateBtn">开始游戏</button></div>
+    <div style="margin-top:8px" class="small">提示：创建后你的角色会保存到服务器（如可连接）或本地。</div>
+  </div>
+</div>
+
 <script>
 // 前端：支持配置后端地址、优先使用服务器互通、并修复打劫目标过滤（仅玩家）
 let SERVER_ROOT = localStorage.getItem('yara_server_root') || '';
@@ -92,7 +108,7 @@ document.getElementById('testConnBtn').onclick = async ()=>{
   }catch(e){ statusEl.textContent = '状态：无法连接服务器'; setStatus('离线'); }
 }
 
-function setStatus(s){ document.getElementById('status').textContent = s; }
+function setStatus(s){ document.getElementById('status').textContent = s; updateControls(); }
 
 async function api(path, opts){
   const url = apiUrl(path);
@@ -140,7 +156,7 @@ document.getElementById('syncBtn').onclick = async ()=>{
   catch(e){ alert('同步失败，离线模式'); setStatus('离线'); }
 }
 
-function renderPlayer(){ const ga=document.getElementById('gameArea'); if(!currentPlayer){ ga.innerHTML='<div class="small">未创建角色</div>'; return; } ga.innerHTML = `<div><strong>${currentPlayer.playerName}</strong> Lv.${currentPlayer.level} 金币:${currentPlayer.gold}</div><div style="margin-top:8px"><button class=\"btn\" onclick=\"startAdventure()\">冒险</button> <button class=\"btn\" onclick=\"openPVP()\">打劫</button></div>`; }
+function renderPlayer(){ const ga=document.getElementById('gameArea'); if(!currentPlayer){ ga.innerHTML='<div class="small">未创建角色</div>'; return; } ga.innerHTML = `<div><strong>${currentPlayer.playerName}</strong> Lv.${currentPlayer.level} 金币:${currentPlayer.gold}</div><div style="margin-top:8px"><button class=\"btn\" onclick=\"startAdventure()\" ${currentPlayer?'' : 'disabled'}>冒险</button> <button class=\"btn\" onclick=\"openPVP()\" ${currentPlayer?'' : 'disabled'}>打劫</button></div>`; }
 
 window.startAdventure = function(){ alert('本Demo前端仅包含简化冒险，详尽玩法在完整客户端'); }
 
@@ -172,12 +188,35 @@ async function rob(targetName){ if(!currentPlayer){ alert('请创建角色'); re
 
 function setStatusText(s){ document.getElementById('connStatus').textContent = '状态：'+s; }
 
+// modal handlers
+function showNameModal(){ document.getElementById('nameModal').style.display='flex'; document.getElementById('modalName').focus(); }
+function hideNameModal(){ document.getElementById('nameModal').style.display='none'; }
+
+document.getElementById('modalCreateBtn').onclick = ()=>{
+  const name = document.getElementById('modalName').value.trim();
+  if(!name){ alert('请输入名字'); return; }
+  const gender = document.getElementById('modalGender').value;
+  // copy to main inputs then trigger create handler
+  document.getElementById('newName').value = name;
+  document.getElementById('newGender').value = gender;
+  // call create handler (it is async)
+  const cb = document.getElementById('createBtn').onclick;
+  if(cb) cb();
+  hideNameModal();
+}
+
 // init
 let currentPlayer = null;
 function loadLastLocal(){ // load last created local player if any
   for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('player_')){ try{ const p=JSON.parse(localStorage.getItem(k)); currentPlayer = p; break;}catch(e){} } }
 }
-loadLastLocal(); renderPlayer();
+
+function updateControls(){ const disabled = !currentPlayer; document.getElementById('syncBtn').disabled = disabled; document.getElementById('pvpViewBtn').disabled = disabled; document.getElementById('refreshTargets').disabled = disabled; }
+
+loadLastLocal();
+if(!currentPlayer){ showNameModal(); }
+renderPlayer();
+updateControls();
 
 </script>
 </body>
