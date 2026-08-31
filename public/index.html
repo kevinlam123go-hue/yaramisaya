@@ -81,12 +81,12 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
 </div>
 
 <script>
-// 前端：支持配置后端地址、优先使用服务器互通、并修复打劫目标过滤（仅玩家）
+// 前端：支持 player token authentication
 let SERVER_ROOT = localStorage.getItem('yara_server_root') || '';
+let currentPlayer = null;
 const STATUS = {ONLINE:'在线', OFFLINE:'离线', UNKNOWN:'未知'};
 
 function apiUrl(path){
-  // path should start with /api
   if(!path.startsWith('/')) path = '/' + path;
   const root = SERVER_ROOT && SERVER_ROOT.trim() !== '' ? SERVER_ROOT.replace(/\/$/,'') : '';
   return root + '/api' + path.replace(/^\/api/, '');
@@ -110,8 +110,16 @@ document.getElementById('testConnBtn').onclick = async ()=>{
 
 function setStatus(s){ document.getElementById('status').textContent = s; updateControls(); }
 
-async function api(path, opts){
+function getPlayerToken(name){ return localStorage.getItem('player_'+name+'_token'); }
+function savePlayerToken(name, token){ if(token) localStorage.setItem('player_'+name+'_token', token); }
+
+async function api(path, opts={}){
   const url = apiUrl(path);
+  opts.headers = opts.headers || {};
+  // if currentPlayer exists, attach its token header if we have it
+  if(currentPlayer && getPlayerToken(currentPlayer.playerName)){
+    opts.headers['X-Player-Token'] = getPlayerToken(currentPlayer.playerName);
+  }
   try{
     const res = await fetch(url, opts);
     if(!res.ok) throw new Error('http '+res.status);
@@ -134,8 +142,10 @@ document.getElementById('createBtn').onclick = async ()=>{
   try{
     const res = await fetch(apiUrl('/players'), {method:'GET'}); // check server
     // server reachable -> POST to server
-    await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)});
-    currentPlayer = p; saveLocal(p); renderPlayer(); setStatus('在线'); alert('已保存到服务器');
+    const created = await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)});
+    // created may include playerToken if just created
+    if(created && created.player && created.player.playerToken){ savePlayerToken(name, created.player.playerToken); }
+    currentPlayer = created.player || p; saveLocal(currentPlayer); renderPlayer(); setStatus('在线'); alert('已保存到服务器');
   }catch(e){
     // fallback local
     saveLocal(p); currentPlayer = p; renderPlayer(); setStatus('离线'); alert('服务器不可达，已保存到本地');
@@ -152,7 +162,10 @@ document.getElementById('loadBtn').onclick = async ()=>{
 
 document.getElementById('syncBtn').onclick = async ()=>{
   if(!currentPlayer){ alert('无角色'); return; }
-  try{ await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(currentPlayer)}); alert('已同步到服务器'); setStatus('在线'); }
+  try{ const res = await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(currentPlayer)});
+    // if server returned a token (e.g., created now), save it
+    if(res && res.player && res.player.playerToken){ savePlayerToken(currentPlayer.playerName, res.player.playerToken); }
+    alert('已同步到服务器'); setStatus('在线'); }
   catch(e){ alert('同步失败，离线模式'); setStatus('离线'); }
 }
 
@@ -180,10 +193,17 @@ async function fetchTargets(){ const div=document.getElementById('targets'); div
 
 document.getElementById('refreshTargets').onclick = fetchTargets;
 
-async function rob(targetName){ if(!currentPlayer){ alert('请创建角色'); return; } if(!confirm('确定打劫 '+targetName+' 吗？')) return; try{ const res = await api('/pvp/rob', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({attacker:currentPlayer.playerName, target:targetName})}); document.getElementById('pvpLog').innerHTML = `<div>${JSON.stringify(res)}</div>` + document.getElementById('pvpLog').innerHTML; // update local
-    // refresh local copy of player
+async function rob(targetName){ if(!currentPlayer){ alert('请创建角色'); return; } if(!confirm('确定打劫 '+targetName+' 吗？')) return; try{
+    // include attacker token header
+    const token = getPlayerToken(currentPlayer.playerName);
+    const opts = {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({attacker:currentPlayer.playerName, target:targetName})};
+    if(token) opts.headers['X-Player-Token'] = token;
+    const res = await fetch(apiUrl('/pvp/rob'), opts);
+    const data = await res.json();
+    document.getElementById('pvpLog').innerHTML = `<div>${JSON.stringify(data)}</div>` + document.getElementById('pvpLog').innerHTML;
+    // update local copy of player
     try{ const updated = await api('/player/'+encodeURIComponent(currentPlayer.playerName)); currentPlayer = updated; saveLocal(updated); renderPlayer(); setStatus('online'); }catch(e){}
-  }catch(e){ alert('打劫失败（可能离线）'); setStatus('离线'); }
+  }catch(e){ alert('打劫失败（可能离线或认证失败）'); setStatus('离线'); }
 }
 
 function setStatusText(s){ document.getElementById('connStatus').textContent = '状态：'+s; }
@@ -206,9 +226,8 @@ document.getElementById('modalCreateBtn').onclick = ()=>{
 }
 
 // init
-let currentPlayer = null;
 function loadLastLocal(){ // load last created local player if any
-  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('player_')){ try{ const p=JSON.parse(localStorage.getItem(k)); currentPlayer = p; break;}catch(e){} } }
+  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('player_') && !k.endsWith('_token')){ try{ const p=JSON.parse(localStorage.getItem(k)); currentPlayer = p; break;}catch(e){} } }
 }
 
 function updateControls(){ const disabled = !currentPlayer; document.getElementById('syncBtn').disabled = disabled; document.getElementById('pvpViewBtn').disabled = disabled; document.getElementById('refreshTargets').disabled = disabled; }
