@@ -17,6 +17,7 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
 .list{max-height:300px;overflow:auto}
 .log{height:180px;overflow:auto;background:rgba(0,0,0,0.03);padding:8px;border-radius:6px;font-size:13px}
 .small{font-size:12px;color:#6b4a19}
+.input{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc}
 </style>
 </head>
 <body>
@@ -25,12 +26,17 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
     <h2>亚拉弥赛亚（在线）</h2>
     <div id="createArea">
       <div><strong>创建/载入角色</strong></div>
-      <div style="margin-top:8px">名字：<input id="newName" maxlength="10"/></div>
-      <div style="margin-top:8px">性别：<select id="newGender"><option>男</option><option>女</option></select></div>
+      <div style="margin-top:8px">名字：<input id="newName" maxlength="10" class="input"/></div>
+      <div style="margin-top:8px">性别：<select id="newGender" class="input"><option>男</option><option>女</option></select></div>
       <div style="margin-top:8px"><button class="btn" id="createBtn">创建并保存到服务器</button></div>
+      <div style="margin-top:12px"><strong>服务器设置</strong></div>
+      <div style="margin-top:8px">服务器地址（留空=同源）:</div>
+      <div style="margin-top:6px"><input id="serverRoot" class="input" placeholder="例如 https://example.com 或 留空"/></div>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="btn" id="saveServerBtn">保存地址</button><button class="btn" id="testConnBtn">测试连接</button></div>
       <div style="margin-top:8px"><button class="btn" id="listBtn">列出服务器玩家</button></div>
-      <div style="margin-top:8px"><select id="serverList" style="width:100%"></select></div>
+      <div style="margin-top:8px"><select id="serverList" class="input" style="height:40px"></select></div>
       <div style="margin-top:8px"><button class="btn" id="loadBtn">从服务器载入选中玩家</button></div>
+      <div style="margin-top:8px"><div id="connStatus" class="small">状态：未知</div></div>
     </div>
     <div style="margin-top:12px">
       <div class="small">注：若无法连接服务器，页面仍可本地运行（使用 localStorage）。</div>
@@ -48,7 +54,7 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
     <div id="mainview" style="margin-top:10px">
       <div id="gameArea"></div>
       <div id="pvpArea" style="display:none">
-        <h3>打劫目标</h3>
+        <h3>打劫目标（仅显示真实玩家）</h3>
         <div id="targets" class="list"></div>
         <div style="margin-top:8px"><button class="btn" id="refreshTargets">刷新</button></div>
         <h4 style="margin-top:12px">战报</h4>
@@ -59,52 +65,79 @@ html,body{height:100%;margin:0;background:linear-gradient(180deg,#efe7d8 0%, #e6
 </div>
 
 <script>
-// 简化前端：会尝试与后端通信；若失败则降级到 localStorage 单机版
-const API_ROOT = '';
-let socket=null;
-let currentPlayer = null;
+// 前端：支持配置后端地址、优先使用服务器互通、并修复打劫目标过滤（仅玩家）
+let SERVER_ROOT = localStorage.getItem('yara_server_root') || '';
+const STATUS = {ONLINE:'在线', OFFLINE:'离线', UNKNOWN:'未知'};
 
-function today(){ const d=new Date(); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); }
+function apiUrl(path){
+  // path should start with /api
+  if(!path.startsWith('/')) path = '/' + path;
+  const root = SERVER_ROOT && SERVER_ROOT.trim() !== '' ? SERVER_ROOT.replace(/\/$/,'') : '';
+  return root + '/api' + path.replace(/^\/api/, '');
+}
+
+function setServerRoot(val){ SERVER_ROOT = val || ''; localStorage.setItem('yara_server_root', SERVER_ROOT); }
+
+document.getElementById('serverRoot').value = SERVER_ROOT;
+document.getElementById('saveServerBtn').onclick = ()=>{ setServerRoot(document.getElementById('serverRoot').value); alert('已保存服务器地址'); }
+
+document.getElementById('testConnBtn').onclick = async ()=>{
+  const statusEl = document.getElementById('connStatus');
+  try{
+    const res = await fetch((SERVER_ROOT?SERVER_ROOT:'') + '/api/players');
+    if(!res.ok) throw new Error('status '+res.status);
+    const data = await res.json();
+    statusEl.textContent = '状态：在线（返回 '+ (Array.isArray(data)?data.length:0) +' 条玩家）';
+    setStatus('在线');
+  }catch(e){ statusEl.textContent = '状态：无法连接服务器'; setStatus('离线'); }
+}
+
+function setStatus(s){ document.getElementById('status').textContent = s; }
 
 async function api(path, opts){
+  const url = apiUrl(path);
   try{
-    const res = await fetch('/api'+path, opts);
-    if(!res.ok) throw new Error('api fail');
+    const res = await fetch(url, opts);
+    if(!res.ok) throw new Error('http '+res.status);
     return await res.json();
-  }catch(e){ console.warn('API error', e); throw e; }
+  }catch(e){ throw e; }
 }
 
 function saveLocal(p){ localStorage.setItem('player_'+p.playerName, JSON.stringify(p)); }
 function loadLocal(name){ const s=localStorage.getItem('player_'+name); return s?JSON.parse(s):null; }
 
-// create minimal template
 function newPlayer(name, gender){ return {
   playerName:name, gender:gender, level:1, exp:0, attack:10, defense:8, magic:0, maxHp:100, currentHp:100, gold:300,
-  skills:['火球术'], pvpSkillOrder:['火球术'], equipment:{weapon:null,armor:null,accessory:null}, inventory:{items:{'经验书':0,'冒险券':0,'劫掠券':3}, skillScrolls:[], equipment:[]}, todayTargets:[], todayPVPCount:0, lastResetDate:today(), isProtected:false, protectedUntil:0, mercenaryExpireTime:0, adventureCount:20, lastAdventureReset:today(), todayTaskProgress:{huntingTarget:'史莱姆',huntingKills:0,huntingRequired:3,task1:0,task2:0,task3:0,task4:0,task5:0,task6:0,task7:0}, taskClaimed:[false,false,false,false,false,false,false], gamblingHistory:[], shopRefreshDate:today(), availableScrolls:[], isNPC:false } }
+  skills:['火球术'], pvpSkillOrder:['火球术'], equipment:{weapon:null,armor:null,accessory:null}, inventory:{items:{'经验书':0,'冒险券':0,'劫掠券':3}, skillScrolls:[], equipment:[]}, todayTargets:[], todayPVPCount:0, lastResetDate:new Date().toISOString().slice(0,10), isProtected:false, protectedUntil:0, mercenaryExpireTime:0, adventureCount:20, lastAdventureReset:new Date().toISOString().slice(0,10), todayTaskProgress:{huntingTarget:'史莱姆',huntingKills:0,huntingRequired:3,task1:0,task2:0,task3:0,task4:0,task5:0,task6:0,task7:0}, taskClaimed:[false,false,false,false,false,false,false], gamblingHistory:[], shopRefreshDate:new Date().toISOString().slice(0,10), availableScrolls:[], isNPC:false } }
 
 // UI bindings
 document.getElementById('createBtn').onclick = async ()=>{
   const name = document.getElementById('newName').value.trim(); if(!name){ alert('请输入名字'); return; }
   const gender = document.getElementById('newGender').value;
   const p = newPlayer(name, gender);
-  currentPlayer = p;
-  saveLocal(p);
-  renderPlayer();
-  // try server create
-  try{ const res = await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)}); console.log('created',res); setStatus('在线'); }catch(e){ setStatus('离线'); }
-}
+  try{
+    const res = await fetch(apiUrl('/players'), {method:'GET'}); // check server
+    // server reachable -> POST to server
+    await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)});
+    currentPlayer = p; saveLocal(p); renderPlayer(); setStatus('在线'); alert('已保存到服务器');
+  }catch(e){
+    // fallback local
+    saveLocal(p); currentPlayer = p; renderPlayer(); setStatus('离线'); alert('服务器不可达，已保存到本地');
+  }
+};
 
-document.getElementById('listBtn').onclick = async ()=>{
-  try{ const list = await api('/players'); const sel = document.getElementById('serverList'); sel.innerHTML=''; list.forEach(p=>{ const opt=document.createElement('option'); opt.value=p.playerName; opt.textContent=p.playerName+' (Lv.'+p.level+')'; sel.appendChild(opt); }); setStatus('在线'); }catch(e){ alert('无法连接服务器，显示本地存档'); setStatus('离线'); const sel=document.getElementById('serverList'); sel.innerHTML=''; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith('player_')){ const obj=JSON.parse(localStorage.getItem(k)); const opt=document.createElement('option'); opt.value=obj.playerName; opt.textContent=obj.playerName; sel.appendChild(opt); } } }
-}
+document.getElementById('listBtn').onclick = async ()=>{ await listPlayers(); }
 
 document.getElementById('loadBtn').onclick = async ()=>{
-  const sel=document.getElementById('serverList'); const name=sel.value; if(!name) return; try{ const p = await api('/player/'+encodeURIComponent(name)); currentPlayer = p; saveLocal(p); renderPlayer(); setStatus('在线'); }catch(e){ const p = loadLocal(name); if(p){ currentPlayer=p; renderPlayer(); setStatus('离线 (加载本地)'); } else alert('无法载入'); }
+  const sel=document.getElementById('serverList'); const name=sel.value; if(!name) return;
+  try{ const p = await api('/player/'+encodeURIComponent(name)); currentPlayer = p; saveLocal(p); renderPlayer(); setStatus('在线'); alert('已从服务器载入'); }
+  catch(e){ const p = loadLocal(name); if(p){ currentPlayer=p; renderPlayer(); setStatus('离线(本地)'); alert('服务器不可达，已加载本地'); } else alert('无法载入'); }
 }
 
 document.getElementById('syncBtn').onclick = async ()=>{
   if(!currentPlayer){ alert('无角色'); return; }
-  try{ const res = await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(currentPlayer)}); alert('已同步到服务器'); setStatus('在线'); }catch(e){ alert('同步失败，离线模式'); setStatus('离线'); }
+  try{ await api('/player', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(currentPlayer)}); alert('已同步到服务器'); setStatus('在线'); }
+  catch(e){ alert('同步失败，离线模式'); setStatus('离线'); }
 }
 
 function renderPlayer(){ const ga=document.getElementById('gameArea'); if(!currentPlayer){ ga.innerHTML='<div class="small">未创建角色</div>'; return; } ga.innerHTML = `<div><strong>${currentPlayer.playerName}</strong> Lv.${currentPlayer.level} 金币:${currentPlayer.gold}</div><div style="margin-top:8px"><button class=\"btn\" onclick=\"startAdventure()\">冒险</button> <button class=\"btn\" onclick=\"openPVP()\">打劫</button></div>`; }
@@ -113,35 +146,38 @@ window.startAdventure = function(){ alert('本Demo前端仅包含简化冒险，
 
 // PVP UI
 function openPVP(){ document.getElementById('pvpArea').style.display='block'; fetchTargets(); }
-
 window.openPVP = openPVP;
 
-async function fetchTargets(){ const div=document.getElementById('targets'); div.innerHTML=''; try{ const list = await api('/players'); list.filter(p=>p.playerName !== (currentPlayer?currentPlayer.playerName:'' )).forEach(t=>{ const row=document.createElement('div'); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.padding='6px'; row.style.borderBottom='1px solid #eee'; row.innerHTML = `<div>${t.playerName} Lv.${t.level} 金币:${t.gold}</div><div><button class=\"btn\" onclick=\"rob(\'${t.playerName}\')\">打劫</button></div>`; div.appendChild(row); }); setStatus('在线'); }catch(e){ setStatus('离线'); alert('无法获取在线目标'); }
+async function listPlayers(){ const sel=document.getElementById('serverList'); sel.innerHTML=''; try{ const list = await api('/players'); // filter only non-NPC players
+    const players = list.filter(p=>!p.isNPC);
+    if(players.length===0){ alert('当前服务器上没有玩家（或仅有 NPC）'); }
+    players.forEach(p=>{ const opt=document.createElement('option'); opt.value=p.playerName; opt.textContent=p.playerName+' (Lv.'+(p.level||1)+')'; sel.appendChild(opt); }); setStatus('在线'); }
+  catch(e){ setStatus('离线'); alert('无法连接服务器以列出玩家'); }
+}
+
+async function fetchTargets(){ const div=document.getElementById('targets'); div.innerHTML=''; try{ const list = await api('/players'); // IMPORTANT: filter out NPCs; only show real players
+    const humanPlayers = list.filter(p=>!p.isNPC && p.playerName); // ensure has name
+    if(humanPlayers.length===0){ div.innerHTML = '<div class="small">当前没有可打劫的玩家。</div>'; setStatus('在线'); return; }
+    humanPlayers.forEach(t=>{ const row=document.createElement('div'); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.padding='6px'; row.style.borderBottom='1px solid #eee'; row.innerHTML = `<div>${t.playerName} Lv.${t.level||1} 金币:${t.gold||0}</div><div><button class=\"btn\" onclick=\"rob(\\'${t.playerName}\\')\">打劫</button></div>`; div.appendChild(row); }); setStatus('在线'); }
+  catch(e){ setStatus('离线'); div.innerHTML = '<div class="small">无法连接服务器，无法获取目标。</div>'; }
 }
 
 document.getElementById('refreshTargets').onclick = fetchTargets;
 
 async function rob(targetName){ if(!currentPlayer){ alert('请创建角色'); return; } if(!confirm('确定打劫 '+targetName+' 吗？')) return; try{ const res = await api('/pvp/rob', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({attacker:currentPlayer.playerName, target:targetName})}); document.getElementById('pvpLog').innerHTML = `<div>${JSON.stringify(res)}</div>` + document.getElementById('pvpLog').innerHTML; // update local
     // refresh local copy of player
-    const updated = await api('/player/'+encodeURIComponent(currentPlayer.playerName)); currentPlayer = updated; saveLocal(updated); renderPlayer(); setStatus('在线');
+    try{ const updated = await api('/player/'+encodeURIComponent(currentPlayer.playerName)); currentPlayer = updated; saveLocal(updated); renderPlayer(); setStatus('online'); }catch(e){}
   }catch(e){ alert('打劫失败（可能离线）'); setStatus('离线'); }
 }
 
-function setStatus(s){ document.getElementById('status').textContent = s; }
+function setStatusText(s){ document.getElementById('connStatus').textContent = '状态：'+s; }
 
-// try to connect websocket
-function initSocket(){
-  try{
-    socket = io();
-    socket.on('connect', ()=>{ setStatus('在线 (WS)'); });
-    socket.on('pvp', data=>{ const log=document.getElementById('pvpLog'); log.innerHTML = `<div>[实时] ${data.message}</div>` + log.innerHTML; });
-  }catch(e){ console.warn('socket fail',e); }
+// init
+let currentPlayer = null;
+function loadLastLocal(){ // load last created local player if any
+  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('player_')){ try{ const p=JSON.parse(localStorage.getItem(k)); currentPlayer = p; break;}catch(e){} } }
 }
-
-// lazy load socket.io client
-(function(){ const s=document.createElement('script'); s.src='/socket.io/socket.io.js'; s.onload=initSocket; document.head.appendChild(s); })();
-
-renderPlayer();
+loadLastLocal(); renderPlayer();
 
 </script>
 </body>
